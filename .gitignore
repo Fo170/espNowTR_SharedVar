@@ -1,0 +1,8 @@
+AGENTS.md
+CLAUDE.md
+copilot-instructions.md
+.claude/
+.pio/
+.vscode/
+*.md~
+*.bak

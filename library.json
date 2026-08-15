@@ -1,0 +1,33 @@
+{
+  "name": "espNow_SharedVariable",
+  "version": "1.0.0",
+  "description": "Variable partagée ESP-NOW pour ESP8266 et ESP32 : une variable logique virtuellement accessible entre plusieurs iOT, avec horodatage UTC, ID de dernier écrivain, CRC32 et jeton d'écriture dynamique par variable (un seul détenteur à la fois).",
+  "keywords": [
+    "esp-now",
+    "espnow",
+    "shared-variable",
+    "variable partagee",
+    "jeton",
+    "token",
+    "iot",
+    "wireless",
+    "esp8266",
+    "esp32"
+  ],
+  "license": "GPL-3.0-only",
+  "frameworks": "arduino",
+  "platforms": [
+    "espressif8266",
+    "espressif32"
+  ],
+  "authors": [
+    {
+      "name": "Olivier FOURNET",
+      "email": "olivier.fournet@free.fr"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Fo170/espNow_SharedVariable.git"
+  }
+}
