@@ -1,6 +1,6 @@
-# espNow_SharedVariable
+# espNowTR_SharedVar
 
-**Variable partagée ESP-NOW** pour **ESP8266** et **ESP32** en un **seul fichier `.h`** (classe `EspNowSharedVariable` + instance globale `espNow_sharedVariable`).
+**Variable partagée ESP-NOW** pour **ESP8266** et **ESP32** (classe `espNowTR_SharedVar` + instance globale `espNowTR_sharedVar`).
 
 Rends une variable logique **virtuellement accessible** entre plusieurs iOT : chaque appareil **déclare** la variable (ID unique + type) et en garde une **copie locale à jour**, propagée en broadcast par le **détenteur du jeton** d'écriture (un seul écrivain à la fois, par variable).
 
@@ -29,21 +29,21 @@ Auteur : Olivier FOURNET — Licence GPL-3.0-only.
 
 ### Arduino IDE
 
-Copier `espNow_SharedVariable.h` dans le dossier de votre sketch, puis :
+Copier `espNowTR_SharedVar.h` dans le dossier de votre sketch, puis :
 
 ```cpp
-#define _ESP_NOW_SHARED_VARIABLE_
-#include "espNow_SharedVariable.h"
+#define _ESP_NOW_TR_SHARED_VAR_
+#include "espNowTR_SharedVar.h"
 ```
 
-**Une seule inclusion par projet** : le fichier définit l'instance globale `espNow_sharedVariable` (pas de garde `#ifndef` — il est activé par `_ESP_NOW_SHARED_VARIABLE_`).
+**Une seule inclusion par projet** : le fichier définit l'instance globale `espNowTR_sharedVar` (pas de garde `#ifndef` — il est activé par `_ESP_NOW_TR_SHARED_VAR_`).
 
 ### PlatformIO
 
 En tant que dépendance (convention Fo170 — toujours la forme git complète) :
 
 ```ini
-lib_deps = https://github.com/Fo170/espNow_SharedVariable.git
+lib_deps = https://github.com/Fo170/espNowTR_SharedVar.git
 ```
 
 Ou en local, dans les exemples fournis : `lib_deps = ../..` (chemin vers la racine du dépôt).
@@ -51,8 +51,8 @@ Ou en local, dans les exemples fournis : `lib_deps = ../..` (chemin vers la raci
 ## Utilisation rapide
 
 ```cpp
-#define _ESP_NOW_SHARED_VARIABLE_
-#include "espNow_SharedVariable.h"
+#define _ESP_NOW_TR_SHARED_VAR_
+#include "espNowTR_SharedVar.h"
 
 #define ID_MA_SONDE     10          // mon id iOT (unique sur le réseau)
 #define _DONNEE_TEMP_    1
@@ -61,29 +61,29 @@ Ou en local, dans les exemples fournis : `lib_deps = ../..` (chemin vers la raci
 void setup() {
   WiFi.mode(WIFI_STA);                        // ESP-NOW en mode station (sans AP)
 
-  EspNowSharedVariable::Config cfg;
+  espNowTR_SharedVar::Config cfg;
   cfg.id_iot = ID_MA_SONDE;
-  espNow_sharedVariable.init(cfg);            // après le démarrage du WiFi
+  espNowTR_sharedVar.init(cfg);            // après le démarrage du WiFi
 
-  espNow_sharedVariable.declare_float(_DONNEE_TEMP_, 21.5);
-  espNow_sharedVariable.declare_couple(_DONNEE_PUISS_, 0.0, "W");
+  espNowTR_sharedVar.declare_float(_DONNEE_TEMP_, 21.5);
+  espNowTR_sharedVar.declare_couple(_DONNEE_PUISS_, 0.0, "W");
 }
 
 void loop() {
-  espNow_sharedVariable.loop();               // OBLIGATOIRE
-  espNow_sharedVariable.regler_heure_utc(epoch_utc);   // fourni par votre lib NTP
+  espNowTR_sharedVar.loop();               // OBLIGATOIRE
+  espNowTR_sharedVar.regler_heure_utc(epoch_utc);   // fourni par votre lib NTP
 
   // --- pour écrire : demander puis attendre le jeton, puis écrire ---
-  if (!espNow_sharedVariable.detiens_jeton(_DONNEE_TEMP_))
-    espNow_sharedVariable.demander_jeton(_DONNEE_TEMP_);
+  if (!espNowTR_sharedVar.detiens_jeton(_DONNEE_TEMP_))
+    espNowTR_sharedVar.demander_jeton(_DONNEE_TEMP_);
   else
-    espNow_sharedVariable.ecrire_float(_DONNEE_TEMP_, 21.5);
+    espNowTR_sharedVar.ecrire_float(_DONNEE_TEMP_, 21.5);
 
   // --- lire (toujours disponible, même sans jeton) ---
   float t;
-  if (espNow_sharedVariable.lire_float(_DONNEE_TEMP_, t)) {
-    uint32_t h  = espNow_sharedVariable.lire_epoch(_DONNEE_TEMP_);
-    uint16_t id = espNow_sharedVariable.dernier_ecrivain(_DONNEE_TEMP_);
+  if (espNowTR_sharedVar.lire_float(_DONNEE_TEMP_, t)) {
+    uint32_t h  = espNowTR_sharedVar.lire_epoch(_DONNEE_TEMP_);
+    uint16_t id = espNowTR_sharedVar.dernier_ecrivain(_DONNEE_TEMP_);
   }
 }
 ```
@@ -144,20 +144,65 @@ void loop() {
 - **JETON** : sous-op REQ / TAKE / RELEASE, aucune charge utile.
 - **CRC32** (polynôme `0xEDB88320`) en fin de trame, calculé sur toute la trame avant le champ CRC.
 
-### Le jeton en détail
+### Le jeton en détail (machinerie Token Ring)
 
-- `demander_jeton(id)` envoie `REQ` en broadcast ; **le détenteur actuel libère immédiatement** (`RELEASE`, transmission de main).
-- Après `jeton_attente_ms` sans détenteur : envoi de `TAKE`, puis fenêtre de conflit `jeton_conflit_ms`. **En cas de conflit (deux appareils), le plus petit `id_iot` gagne** — les IDs iOT doivent être uniques sur le réseau.
-- Le détenteur **re-broadcast sa valeur** (heartbeat) toutes les `jeton_heartbeat_ms` : cela rafraîchit les copies locales des lecteurs **et** prolonge sa location.
-- Sans heartbeat pendant `jeton_location_ms`, le jeton redevient libre : **reprise automatique** si le détenteur meurt.
-- Un récepteur n'accepte une DONNEE que si **CRC OK**, type cohérent et **epoch ≥ epoch local** (les trames périmées sont ignorées).
+Le jeton est **par variable** : chaque variable possède son propre jeton et sa propre machine à états locale `LIBRE → DEMANDE → ATTENTE_TAKE → DETENU` (constantes `ESPNOW_VAR_JETON_*`). Un seul iOT à la fois peut détenir le jeton d'une variable — c'est lui, et lui seul, qui est autorisé à `ecrire_*()`.
+
+**Timings (champs `Config`, modifiables)** :
+
+| Constante | Défaut | Rôle |
+|---|---|---|
+| `jeton_attente_ms` | 800 | après un `REQ`, délai avant de s'attribuer un jeton libre |
+| `jeton_conflit_ms` | 200 | fenêtre de conflit après un `TAKE` (le plus petit `id_iot` gagne) |
+| `jeton_heartbeat_ms` | 1000 | le détenteur re-broadcast sa valeur (heartbeat) |
+| `jeton_location_ms` | 3000 | sans heartbeat, le jeton redevient libre |
+
+**Acquisition (celui qui veut écrire)** :
+
+1. `demander_jeton(id)` n'aboutit que si l'état local est `LIBRE` **et** qu'aucun détenteur n'est connu → broadcast `REQ`.
+   - Le détenteur actuel, s'il en existe un, libère **immédiatement** (`RELEASE`, transmission de main).
+2. Après `jeton_attente_ms` sans détenteur connu : broadcast `TAKE`, puis ouverture de la fenêtre de conflit `jeton_conflit_ms`.
+   - Deux candidats simultanés : **le plus petit `id_iot` gagne**, l'autre cède et devient observateur.
+3. Après `jeton_conflit_ms` sans candidat plus petit : passage en **`DETENU`**, heartbeat immédiat puis toutes les `jeton_heartbeat_ms`.
+
+**Maintien (celui qui détient)** :
+
+- Le détenteur **re-broadcast sa valeur** (trame DONNEE) toutes les `jeton_heartbeat_ms` : cela rafraîchit les copies locales des lecteurs **et** prolonge la location que ceux-ci lui accordent.
+- Chaque observateur renouvelle son `jeton_fin_ms` à chaque DONNEE reçue du détenteur.
+- Sans DONNEE du détenteur pendant `jeton_location_ms`, chaque observateur le déclare libre : **reprise automatique** (détenteur mort ou hors de portée).
+
+**Libération** : `liberer_jeton(id)` broadcast `RELEASE` ; un `REQ` reçu par le détenteur déclenche aussi une libération immédiate.
+
+**Résolution de conflit et auto-réparation** :
+
+- Deux `TAKE` simultanés : le plus petit `id_iot` garde le jeton, l'autre observe.
+- Le broadcast ESP-NOW n'a **pas d'acquittement** : si deux `TAKE` se perdent et que deux nœuds passent en `DETENU`, leurs heartbeats (DONNEE) finissent par se croiser et **le plus petit `id_iot` l'emporte en 1 à 2 périodes de heartbeat** : la DONNEE du plus petit portant un epoch plus ancien est d'abord rejetée (`epoch < local`), le plus petit adopte la valeur la plus récente puis la re-broadcast, ce qui déclenche la cession du plus grand.
+- Un détenteur `DETENU` qui reçoit une DONNEE d'un `id_iot` plus petit (epoch ≥ local) cède immédiatement le jeton.
+
+### Robustesse et cohérence de lecture
+
+**Lecture toujours atomique (pas de lecture « pendante »)** :
+
+- Une valeur tient **dans une seule trame** (≤ 216 o) : epoch + id_ecrivain + type + longueur + valeur + unité, protégée par CRC32.
+- La copie locale n'est mise à jour qu'en `loop()` (`_traiter_donnee`), à partir d'une trame **complète et validée** (CRC OK, type identique, epoch ≥ local). Un `lire_*()` renvoie donc toujours un état cohérent — l'ancienne valeur complète ou la nouvelle valeur complète, jamais un mélange.
+- Réception et lecture s'exécutent dans le même contexte (`loop()`, mono-thread Arduino) : aucun accès concurrent à `_Variable`.
+- **Conclusion** : un flag « variable en cours d'écriture / verrouillée » n'est **pas nécessaire** — une trame arrive entière ou pas, et le flag introduirait lui-même une course (quand le marquer, quand le dé-marquer). La fraîcheur se juge déjà via `lire_epoch()` / `dernier_ecrivain()`.
+
+**Un seul écrivain** : garanti par le jeton dans les conditions nominales (IDs iOT uniques, nœuds coopératifs). En cas de trames perdues, l'arbitrage par plus petit `id_iot` + comparaison d'epoch reconverge.
+
+**Limites connues** :
+
+- Broadcast non fiable (pas d'ACK) : une collision de `TAKE` peut donner une courte fenêtre à deux écrivains ; l'epoch (le plus récent gagne) et l'arbitrage par plus petit id rétablissent la cohérence.
+- Dépendance aux **IDs iOT uniques** : deux nœuds de même `id_iot` ne peuvent pas s'arbitrer.
+- Horodatage : l'epoch provient de `regler_heure_utc()` (NTP côté application) ; un nœud sans heure écrit avec l'epoch 0, et ses écritures sont **ignorées** par des lecteurs dont l'epoch local est déjà supérieur.
+- Le jeton est **par variable** : il n'existe pas de transaction atomique multi-variables. Un lecteur qui veut plusieurs variables cohérentes « ensemble » doit le gérer lui-même (comparaison d'epochs), ou attendre une éventuelle extension (numéro de lot / séquence).
 
 ## Macros de compilation
 
 | Macro | Effet |
 |---|---|
-| `_ESP_NOW_SHARED_VARIABLE_` | active le fichier (obligatoire, à définir avant l'`#include`) |
-| `_DEBUG_ESP_NOW_SHARED_VARIABLE_` | logs Serial (envoi/réception/jeton/CRC) |
+| `_ESP_NOW_TR_SHARED_VAR_` | active le fichier (obligatoire, à définir avant l'`#include`) |
+| `_DEBUG_ESP_NOW_TR_SHARED_VAR_` | logs Serial (envoi/réception/jeton/CRC) |
 | `ESPNOW_VAR_MAX_VARIABLES` | nb max de variables déclarées (défaut 8) |
 | `ESPNOW_VAR_MAX_STRING` | longueur max d'une valeur string (défaut 192) |
 | `ESPNOW_VAR_MAX_UNITE` | longueur max d'une unité (défaut 16) |

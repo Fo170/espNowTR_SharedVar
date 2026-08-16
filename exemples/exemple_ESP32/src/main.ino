@@ -1,5 +1,5 @@
 // ============================================================================
-//  exemple_ESP32 — espNow_SharedVariable.h
+//  exemple_ESP32 — espNowTR_SharedVar.h
 //
 //  Variable partagée ESP-NOW :
 //    - déclare deux variables (float + couple float/unité)
@@ -9,12 +9,12 @@
 //    - lit la copie locale de la variable température (écrite par un autre iOT)
 //
 //  Installation :
-//    - Arduino IDE : copier espNow_SharedVariable.h dans le dossier du sketch
+//    - Arduino IDE : copier espNowTR_SharedVar.h dans le dossier du sketch
 //    - PlatformIO  : voir exemples/platformio.ini (pio run -e esp32)
 // ============================================================================
 
-#define _ESP_NOW_SHARED_VARIABLE_
-#include "espNow_SharedVariable.h"
+#define _ESP_NOW_TR_SHARED_VAR_
+#include "espNowTR_SharedVar.h"
 
 // ---- IDs de variables (définis par votre projet) ----
 #define _DONNEE_TEMPERATURE_   1
@@ -27,35 +27,35 @@ void setup() {
   Serial.begin(115200);
   WiFi.mode(WIFI_STA);                        // ESP-NOW en mode station (sans AP)
 
-  EspNowSharedVariable::Config cfg;
+  espNowTR_SharedVar::Config cfg;
   cfg.id_iot = ID_ESP32_RADIATEUR;
-  espNow_sharedVariable.init(cfg);            // après le démarrage du WiFi
+  espNowTR_sharedVar.init(cfg);            // après le démarrage du WiFi
 
-  espNow_sharedVariable.declare_float(_DONNEE_TEMPERATURE_, 21.5);
-  espNow_sharedVariable.declare_couple(_DONNEE_PUISSANCE_, 0.0, "W");
+  espNowTR_sharedVar.declare_float(_DONNEE_TEMPERATURE_, 21.5);
+  espNowTR_sharedVar.declare_couple(_DONNEE_PUISSANCE_, 0.0, "W");
 
-  Serial.println(F("[exemple] espNow_SharedVariable initialisé"));
+  Serial.println(F("[exemple] espNowTR_SharedVar initialisé"));
 }
 
 void loop() {
-  espNow_sharedVariable.loop();               // OBLIGATOIRE : réception + timers jeton
+  espNowTR_sharedVar.loop();               // OBLIGATOIRE : réception + timers jeton
 
   // heure UTC fournie par votre lib NTP (ex. NTP_FR) ; horodatage auto des écritures
   uint32_t epoch_utc = 0;
-  espNow_sharedVariable.regler_heure_utc(epoch_utc);
+  espNowTR_sharedVar.regler_heure_utc(epoch_utc);
 
   // ---- écriture de la puissance : demande du jeton puis écriture ----
   static unsigned long dernier_ecriture = 0;
   if (millis() - dernier_ecriture >= 5000) {
     dernier_ecriture = millis();
 
-    if (!espNow_sharedVariable.detiens_jeton(_DONNEE_PUISSANCE_)) {
-      espNow_sharedVariable.demander_jeton(_DONNEE_PUISSANCE_);
+    if (!espNowTR_sharedVar.detiens_jeton(_DONNEE_PUISSANCE_)) {
+      espNowTR_sharedVar.demander_jeton(_DONNEE_PUISSANCE_);
       Serial.println(F("[exemple] jeton puissance demandé"));
     } else {
       // j'ai le jeton : j'écris (un seul iOT peut écrire à la fois)
       float p = 100.0f + (millis() % 50);
-      if (espNow_sharedVariable.ecrire_couple(_DONNEE_PUISSANCE_, p, "W"))
+      if (espNowTR_sharedVar.ecrire_couple(_DONNEE_PUISSANCE_, p, "W"))
         Serial.print(F("[exemple] puissance écrite : "));
       Serial.print(p);
       Serial.println(F(" W"));
@@ -66,7 +66,7 @@ void loop() {
   static unsigned long dernier_liberation = 0;
   if (millis() - dernier_liberation >= 30000) {
     dernier_liberation = millis();
-    if (espNow_sharedVariable.liberer_jeton(_DONNEE_PUISSANCE_))
+    if (espNowTR_sharedVar.liberer_jeton(_DONNEE_PUISSANCE_))
       Serial.println(F("[exemple] jeton puissance libéré"));
   }
 
@@ -76,23 +76,23 @@ void loop() {
     dernier_lecture = millis();
 
     float t;
-    if (espNow_sharedVariable.lire_float(_DONNEE_TEMPERATURE_, t)) {
+    if (espNowTR_sharedVar.lire_float(_DONNEE_TEMPERATURE_, t)) {
       Serial.print(F("Température : "));
       Serial.print(t);
       Serial.print(F(" °C, epoch="));
-      Serial.print(espNow_sharedVariable.lire_epoch(_DONNEE_TEMPERATURE_));
+      Serial.print(espNowTR_sharedVar.lire_epoch(_DONNEE_TEMPERATURE_));
       Serial.print(F(", écrit par #"));
-      Serial.println(espNow_sharedVariable.dernier_ecrivain(_DONNEE_TEMPERATURE_));
+      Serial.println(espNowTR_sharedVar.dernier_ecrivain(_DONNEE_TEMPERATURE_));
     }
 
     float p; char unite[8];
-    if (espNow_sharedVariable.lire_couple(_DONNEE_PUISSANCE_, p, unite, sizeof(unite))) {
+    if (espNowTR_sharedVar.lire_couple(_DONNEE_PUISSANCE_, p, unite, sizeof(unite))) {
       Serial.print(F("Puissance : "));
       Serial.print(p);
       Serial.print(F(" "));
       Serial.print(unite);
       Serial.print(F(" (détenteur jeton : "));
-      Serial.print(espNow_sharedVariable.detenteur_jeton(_DONNEE_PUISSANCE_));
+      Serial.print(espNowTR_sharedVar.detenteur_jeton(_DONNEE_PUISSANCE_));
       Serial.println(F(")"));
     }
   }

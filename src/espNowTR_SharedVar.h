@@ -1,8 +1,8 @@
-#ifdef _ESP_NOW_SHARED_VARIABLE_
+#ifdef _ESP_NOW_TR_SHARED_VAR_
 
 // ============================================================================
-//  espNow_SharedVariable.h
-//  Variable partagée ESP-NOW pour ESP8266 et ESP32 — v1.0.0
+//  espNowTR_SharedVar.h
+//  Variable partagée ESP-NOW (jeton d'écriture) pour ESP8266 et ESP32 — v1.0.0
 //
 //  Rends une variable logique virtuellement accessible entre plusieurs iOT :
 //  chaque appareil déclare la variable (ID + type) et en garde une copie
@@ -19,43 +19,49 @@
 //
 //  JETON D'ÉCRITURE (par variable, dynamique avec location) :
 //    - demander_jeton(id) → REQ broadcast ; le détenteur actuel libère (RELEASE)
-//    - après jeton_attente_ms sans détenteur → TAKE (conflit : le plus petit
-//      id_iot gagne, fenêtre jeton_conflit_ms)
+//    - après jeton_attente_ms sans détenteur → TAKE (fenêtre de conflit
+//      jeton_conflit_ms : le plus petit id_iot gagne, les autres cèdent)
 //    - le détenteur re-broadcast sa valeur toutes les jeton_heartbeat_ms
 //      (heartbeat = rafraîchit les copies locales + prolonge sa location)
 //    - sans heartbeat pendant jeton_location_ms → jeton libre (reprise auto)
+//    - auto-réparation : si deux TAKE se perdent (broadcast sans ACK), les deux
+//      nœuds passent DETENU ; le plus petit id_iot finit par l'emporter (≤ 2
+//      heartbeats) car le plus grand cède à sa DONNEE (epoch ≥ local requis).
+//    - lecture atomique : une valeur tient dans une seule trame (≤216 o),
+//      appliquée en loop() depuis une trame complète validée (CRC) → aucun
+//      flag « en cours d'écriture » nécessaire, lire_*() renvoie un état complet.
 //
 //  Horodatage : l'application fournit l'heure UTC via regler_heure_utc(epoch)
 //  (ex. après une synchro NTP) ; les écritures sont horodatées automatiquement.
 //
 //  UTILISATION (inclusion UNIQUE par projet) :
 //
-//    #define _ESP_NOW_SHARED_VARIABLE_
-//    #include "espNow_SharedVariable.h"
+//    #define _ESP_NOW_TR_SHARED_VAR_
+//    #include "espNowTR_SharedVar.h"
 //
 //    #define _DONNEE_TEMP_  1
 //
 //    void setup() {
 //      WiFi.mode(WIFI_STA);
-//      EspNowSharedVariable::Config cfg;
+//      espNowTR_SharedVar::Config cfg;
 //      cfg.id_iot = 10;
-//      espNow_sharedVariable.init(cfg);          // après le démarrage du WiFi (STA)
-//      espNow_sharedVariable.declare_float(_DONNEE_TEMP_, 21.5);
+//      espNowTR_sharedVar.init(cfg);             // après le démarrage du WiFi (STA)
+//      espNowTR_sharedVar.declare_float(_DONNEE_TEMP_, 21.5);
 //    }
 //
 //    void loop() {
-//      espNow_sharedVariable.loop();             // OBLIGATOIRE
-//      espNow_sharedVariable.regler_heure_utc(epoch_utc);
+//      espNowTR_sharedVar.loop();                // OBLIGATOIRE
+//      espNowTR_sharedVar.regler_heure_utc(epoch_utc);
 //
-//      if (!espNow_sharedVariable.detiens_jeton(_DONNEE_TEMP_))
-//        espNow_sharedVariable.demander_jeton(_DONNEE_TEMP_);
+//      if (!espNowTR_sharedVar.detiens_jeton(_DONNEE_TEMP_))
+//        espNowTR_sharedVar.demander_jeton(_DONNEE_TEMP_);
 //      else
-//        espNow_sharedVariable.ecrire_float(_DONNEE_TEMP_, 21.5);
+//        espNowTR_sharedVar.ecrire_float(_DONNEE_TEMP_, 21.5);
 //
 //      float t;
-//      if (espNow_sharedVariable.lire_float(_DONNEE_TEMP_, t)) {
-//        uint32_t h = espNow_sharedVariable.lire_epoch(_DONNEE_TEMP_);
-//        uint16_t w = espNow_sharedVariable.dernier_ecrivain(_DONNEE_TEMP_);
+//      if (espNowTR_sharedVar.lire_float(_DONNEE_TEMP_, t)) {
+//        uint32_t h = espNowTR_sharedVar.lire_epoch(_DONNEE_TEMP_);
+//        uint16_t w = espNowTR_sharedVar.dernier_ecrivain(_DONNEE_TEMP_);
 //      }
 //    }
 //
@@ -74,7 +80,7 @@ extern "C" {
 #include <esp_now.h>
 #include "esp_idf_version.h"               // pour détecter la signature de callback (IDF ≥ 5)
 #else
-#error "espNow_SharedVariable.h : ne supporte que les ESP8266 et ESP32"
+#error "espNowTR_SharedVar.h : ne supporte que les ESP8266 et ESP32"
 #endif
 #include <string.h>
 #include <stdint.h>
@@ -168,9 +174,9 @@ static void espnow_var_copie_unite(char* dest, uint8_t max_dest, const char* src
 }
 
 // ----------------------------------------------------------------------------
-//  Classe EspNowSharedVariable — variable partagée ESP-NOW
+//  Classe espNowTR_SharedVar — variable partagée ESP-NOW (jeton d'écriture)
 // ----------------------------------------------------------------------------
-class EspNowSharedVariable
+class espNowTR_SharedVar
 {
 public:
   struct Config
@@ -279,24 +285,24 @@ private:
   static void _on_recv(const uint8_t* data, uint8_t len);
   static void _on_sent(uint8_t status);
 
-  static EspNowSharedVariable* s_instance;
+  static espNowTR_SharedVar* s_instance;
 };
 
 static uint8_t _espnow_var_broadcast[] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
-EspNowSharedVariable* EspNowSharedVariable::s_instance = NULL;
+espNowTR_SharedVar* espNowTR_SharedVar::s_instance = NULL;
 
 // ============================================================================
 //  Initialisation
 // ============================================================================
-void EspNowSharedVariable::init(const Config& cfg)
+void espNowTR_SharedVar::init(const Config& cfg)
 {
   _cfg = cfg;
   s_instance = this;
 
   if (esp_now_init() != 0)
   {
-    #ifdef _DEBUG_ESP_NOW_SHARED_VARIABLE_
-    Serial.println(F("[espNow_SharedVariable] erreur esp_now_init"));
+    #ifdef _DEBUG_ESP_NOW_TR_SHARED_VAR_
+    Serial.println(F("[espNowTR_SharedVar] erreur esp_now_init"));
     #endif
     return;
   }
@@ -312,28 +318,28 @@ void EspNowSharedVariable::init(const Config& cfg)
   peerInfo.encrypt = false;
   if (esp_now_add_peer(&peerInfo) != ESP_OK)
   {
-    #ifdef _DEBUG_ESP_NOW_SHARED_VARIABLE_
-    Serial.println(F("[espNow_SharedVariable] erreur esp_now_add_peer"));
+    #ifdef _DEBUG_ESP_NOW_TR_SHARED_VAR_
+    Serial.println(F("[espNowTR_SharedVar] erreur esp_now_add_peer"));
     #endif
   }
   #endif
   esp_now_register_send_cb(_cb_sent);
   esp_now_register_recv_cb(_cb_recv);
   _initialise = true;
-  #ifdef _DEBUG_ESP_NOW_SHARED_VARIABLE_
-  Serial.println(F("[espNow_SharedVariable] init OK"));
+  #ifdef _DEBUG_ESP_NOW_TR_SHARED_VAR_
+  Serial.println(F("[espNowTR_SharedVar] init OK"));
   #endif
 }
 
 // ============================================================================
 //  Horloge UTC (fournie par l'application)
 // ============================================================================
-void EspNowSharedVariable::regler_heure_utc(uint32_t epoch)
+void espNowTR_SharedVar::regler_heure_utc(uint32_t epoch)
 {
   _epoch_utc = epoch;
 }
 
-uint32_t EspNowSharedVariable::heure_utc()
+uint32_t espNowTR_SharedVar::heure_utc()
 {
   return _epoch_utc;
 }
@@ -341,7 +347,7 @@ uint32_t EspNowSharedVariable::heure_utc()
 // ============================================================================
 //  Boucle de service : trames reçues + timers jeton (heartbeat, leases, REQ)
 // ============================================================================
-void EspNowSharedVariable::loop()
+void espNowTR_SharedVar::loop()
 {
   // traite toutes les trames reçues depuis le dernier appel
   while (_rx_tail != _rx_head)
@@ -366,8 +372,8 @@ void EspNowSharedVariable::loop()
           _envoyer_jeton(ESPNOW_VAR_JETON_TAKE, v->id);
           v->etat = ESPNOW_VAR_JETON_ATTENTE_TAKE;
           v->requete_ms = millis();
-          #ifdef _DEBUG_ESP_NOW_SHARED_VARIABLE_
-          Serial.print(F("[espNow_SharedVariable] jeton prise var "));
+          #ifdef _DEBUG_ESP_NOW_TR_SHARED_VAR_
+          Serial.print(F("[espNowTR_SharedVar] jeton prise var "));
           Serial.println(v->id);
           #endif
         }
@@ -383,8 +389,8 @@ void EspNowSharedVariable::loop()
       {
         v->etat = ESPNOW_VAR_JETON_DETENU;
         v->last_beat_ms = 0;                   // heartbeat immédiat
-        #ifdef _DEBUG_ESP_NOW_SHARED_VARIABLE_
-        Serial.print(F("[espNow_SharedVariable] jeton DÉTENU var "));
+        #ifdef _DEBUG_ESP_NOW_TR_SHARED_VAR_
+        Serial.print(F("[espNowTR_SharedVar] jeton DÉTENU var "));
         Serial.println(v->id);
         #endif
       }
@@ -403,8 +409,8 @@ void EspNowSharedVariable::loop()
     {
       if ((int32_t)(millis() - v->jeton_fin_ms) >= 0)
       {
-        #ifdef _DEBUG_ESP_NOW_SHARED_VARIABLE_
-        Serial.print(F("[espNow_SharedVariable] location expirée var "));
+        #ifdef _DEBUG_ESP_NOW_TR_SHARED_VAR_
+        Serial.print(F("[espNowTR_SharedVar] location expirée var "));
         Serial.println(v->id);
         #endif
         v->jeton_detenteur = 0;
@@ -414,7 +420,7 @@ void EspNowSharedVariable::loop()
   }
 }
 
-bool EspNowSharedVariable::_ecoule(uint32_t depuis, uint32_t delta)
+bool espNowTR_SharedVar::_ecoule(uint32_t depuis, uint32_t delta)
 {
   return (uint32_t)(millis() - depuis) >= delta;
 }
@@ -422,7 +428,7 @@ bool EspNowSharedVariable::_ecoule(uint32_t depuis, uint32_t delta)
 // ============================================================================
 //  Registre des variables
 // ============================================================================
-EspNowSharedVariable::_Variable* EspNowSharedVariable::_trouver(uint16_t id)
+espNowTR_SharedVar::_Variable* espNowTR_SharedVar::_trouver(uint16_t id)
 {
   if (id == 0) return NULL;
   for (uint8_t i = 0; i < ESPNOW_VAR_MAX_VARIABLES; i++)
@@ -430,7 +436,7 @@ EspNowSharedVariable::_Variable* EspNowSharedVariable::_trouver(uint16_t id)
   return NULL;
 }
 
-EspNowSharedVariable::_Variable* EspNowSharedVariable::_creer(uint16_t id, uint8_t type)
+espNowTR_SharedVar::_Variable* espNowTR_SharedVar::_creer(uint16_t id, uint8_t type)
 {
   if (id == 0) return NULL;
   for (uint8_t i = 0; i < ESPNOW_VAR_MAX_VARIABLES; i++)
@@ -451,7 +457,7 @@ EspNowSharedVariable::_Variable* EspNowSharedVariable::_creer(uint16_t id, uint8
 // ============================================================================
 //  Déclaration
 // ============================================================================
-bool EspNowSharedVariable::declare_bool(uint16_t id, bool val)
+bool espNowTR_SharedVar::declare_bool(uint16_t id, bool val)
 {
   if (_trouver(id)) return false;
   _Variable* v = _creer(id, ESPNOW_VAR_DONNEE_BOOL);
@@ -461,7 +467,7 @@ bool EspNowSharedVariable::declare_bool(uint16_t id, bool val)
   return true;
 }
 
-bool EspNowSharedVariable::declare_int(uint16_t id, int32_t val)
+bool espNowTR_SharedVar::declare_int(uint16_t id, int32_t val)
 {
   if (_trouver(id)) return false;
   _Variable* v = _creer(id, ESPNOW_VAR_DONNEE_INT);
@@ -471,7 +477,7 @@ bool EspNowSharedVariable::declare_int(uint16_t id, int32_t val)
   return true;
 }
 
-bool EspNowSharedVariable::declare_float(uint16_t id, float val)
+bool espNowTR_SharedVar::declare_float(uint16_t id, float val)
 {
   if (_trouver(id)) return false;
   _Variable* v = _creer(id, ESPNOW_VAR_DONNEE_FLOAT);
@@ -481,7 +487,7 @@ bool EspNowSharedVariable::declare_float(uint16_t id, float val)
   return true;
 }
 
-bool EspNowSharedVariable::declare_double(uint16_t id, double val)
+bool espNowTR_SharedVar::declare_double(uint16_t id, double val)
 {
   if (_trouver(id)) return false;
   _Variable* v = _creer(id, ESPNOW_VAR_DONNEE_DOUBLE);
@@ -491,7 +497,7 @@ bool EspNowSharedVariable::declare_double(uint16_t id, double val)
   return true;
 }
 
-bool EspNowSharedVariable::declare_string(uint16_t id, const char* val)
+bool espNowTR_SharedVar::declare_string(uint16_t id, const char* val)
 {
   if (_trouver(id)) return false;
   _Variable* v = _creer(id, ESPNOW_VAR_DONNEE_STRING);
@@ -503,7 +509,7 @@ bool EspNowSharedVariable::declare_string(uint16_t id, const char* val)
   return true;
 }
 
-bool EspNowSharedVariable::declare_couple(uint16_t id, float val, const char* unite)
+bool espNowTR_SharedVar::declare_couple(uint16_t id, float val, const char* unite)
 {
   if (_trouver(id)) return false;
   _Variable* v = _creer(id, ESPNOW_VAR_DONNEE_COUPLE);
@@ -517,7 +523,7 @@ bool EspNowSharedVariable::declare_couple(uint16_t id, float val, const char* un
 // ============================================================================
 //  Écriture (réservée au détenteur du jeton)
 // ============================================================================
-bool EspNowSharedVariable::ecrire_bool(uint16_t id, bool val)
+bool espNowTR_SharedVar::ecrire_bool(uint16_t id, bool val)
 {
   _Variable* v = _trouver(id);
   if (!v || v->type != ESPNOW_VAR_DONNEE_BOOL) return false;
@@ -531,7 +537,7 @@ bool EspNowSharedVariable::ecrire_bool(uint16_t id, bool val)
   return true;
 }
 
-bool EspNowSharedVariable::ecrire_int(uint16_t id, int32_t val)
+bool espNowTR_SharedVar::ecrire_int(uint16_t id, int32_t val)
 {
   _Variable* v = _trouver(id);
   if (!v || v->type != ESPNOW_VAR_DONNEE_INT) return false;
@@ -545,7 +551,7 @@ bool EspNowSharedVariable::ecrire_int(uint16_t id, int32_t val)
   return true;
 }
 
-bool EspNowSharedVariable::ecrire_float(uint16_t id, float val)
+bool espNowTR_SharedVar::ecrire_float(uint16_t id, float val)
 {
   _Variable* v = _trouver(id);
   if (!v || v->type != ESPNOW_VAR_DONNEE_FLOAT) return false;
@@ -559,7 +565,7 @@ bool EspNowSharedVariable::ecrire_float(uint16_t id, float val)
   return true;
 }
 
-bool EspNowSharedVariable::ecrire_double(uint16_t id, double val)
+bool espNowTR_SharedVar::ecrire_double(uint16_t id, double val)
 {
   _Variable* v = _trouver(id);
   if (!v || v->type != ESPNOW_VAR_DONNEE_DOUBLE) return false;
@@ -573,7 +579,7 @@ bool EspNowSharedVariable::ecrire_double(uint16_t id, double val)
   return true;
 }
 
-bool EspNowSharedVariable::ecrire_string(uint16_t id, const char* val)
+bool espNowTR_SharedVar::ecrire_string(uint16_t id, const char* val)
 {
   _Variable* v = _trouver(id);
   if (!v || v->type != ESPNOW_VAR_DONNEE_STRING) return false;
@@ -589,7 +595,7 @@ bool EspNowSharedVariable::ecrire_string(uint16_t id, const char* val)
   return true;
 }
 
-bool EspNowSharedVariable::ecrire_couple(uint16_t id, float val, const char* unite)
+bool espNowTR_SharedVar::ecrire_couple(uint16_t id, float val, const char* unite)
 {
   _Variable* v = _trouver(id);
   if (!v || v->type != ESPNOW_VAR_DONNEE_COUPLE) return false;
@@ -607,7 +613,7 @@ bool EspNowSharedVariable::ecrire_couple(uint16_t id, float val, const char* uni
 // ============================================================================
 //  Lecture (copie locale)
 // ============================================================================
-bool EspNowSharedVariable::lire_bool(uint16_t id, bool& val)
+bool espNowTR_SharedVar::lire_bool(uint16_t id, bool& val)
 {
   _Variable* v = _trouver(id);
   if (!v || v->type != ESPNOW_VAR_DONNEE_BOOL) return false;
@@ -615,7 +621,7 @@ bool EspNowSharedVariable::lire_bool(uint16_t id, bool& val)
   return true;
 }
 
-bool EspNowSharedVariable::lire_int(uint16_t id, int32_t& val)
+bool espNowTR_SharedVar::lire_int(uint16_t id, int32_t& val)
 {
   _Variable* v = _trouver(id);
   if (!v || v->type != ESPNOW_VAR_DONNEE_INT) return false;
@@ -623,7 +629,7 @@ bool EspNowSharedVariable::lire_int(uint16_t id, int32_t& val)
   return true;
 }
 
-bool EspNowSharedVariable::lire_float(uint16_t id, float& val, char* unite, uint8_t max_unite)
+bool espNowTR_SharedVar::lire_float(uint16_t id, float& val, char* unite, uint8_t max_unite)
 {
   _Variable* v = _trouver(id);
   if (!v) return false;
@@ -634,7 +640,7 @@ bool EspNowSharedVariable::lire_float(uint16_t id, float& val, char* unite, uint
   return true;
 }
 
-bool EspNowSharedVariable::lire_double(uint16_t id, double& val)
+bool espNowTR_SharedVar::lire_double(uint16_t id, double& val)
 {
   _Variable* v = _trouver(id);
   if (!v || v->type != ESPNOW_VAR_DONNEE_DOUBLE) return false;
@@ -642,7 +648,7 @@ bool EspNowSharedVariable::lire_double(uint16_t id, double& val)
   return true;
 }
 
-bool EspNowSharedVariable::lire_string(uint16_t id, char* val, uint8_t max_val)
+bool espNowTR_SharedVar::lire_string(uint16_t id, char* val, uint8_t max_val)
 {
   if (!val || max_val == 0) return false;
   _Variable* v = _trouver(id);
@@ -653,7 +659,7 @@ bool EspNowSharedVariable::lire_string(uint16_t id, char* val, uint8_t max_val)
   return true;
 }
 
-bool EspNowSharedVariable::lire_couple(uint16_t id, float& val, char* unite, uint8_t max_unite)
+bool espNowTR_SharedVar::lire_couple(uint16_t id, float& val, char* unite, uint8_t max_unite)
 {
   _Variable* v = _trouver(id);
   if (!v || v->type != ESPNOW_VAR_DONNEE_COUPLE) return false;
@@ -662,25 +668,25 @@ bool EspNowSharedVariable::lire_couple(uint16_t id, float& val, char* unite, uin
   return true;
 }
 
-uint32_t EspNowSharedVariable::lire_epoch(uint16_t id)
+uint32_t espNowTR_SharedVar::lire_epoch(uint16_t id)
 {
   _Variable* v = _trouver(id);
   return v ? v->epoch : 0;
 }
 
-uint16_t EspNowSharedVariable::dernier_ecrivain(uint16_t id)
+uint16_t espNowTR_SharedVar::dernier_ecrivain(uint16_t id)
 {
   _Variable* v = _trouver(id);
   return v ? v->id_ecrivain : 0;
 }
 
-uint8_t EspNowSharedVariable::type_de(uint16_t id)
+uint8_t espNowTR_SharedVar::type_de(uint16_t id)
 {
   _Variable* v = _trouver(id);
   return v ? v->type : 0xFF;
 }
 
-bool EspNowSharedVariable::connue(uint16_t id)
+bool espNowTR_SharedVar::connue(uint16_t id)
 {
   return _trouver(id) != NULL;
 }
@@ -688,7 +694,7 @@ bool EspNowSharedVariable::connue(uint16_t id)
 // ============================================================================
 //  Jeton d'écriture
 // ============================================================================
-bool EspNowSharedVariable::demander_jeton(uint16_t id)
+bool espNowTR_SharedVar::demander_jeton(uint16_t id)
 {
   _Variable* v = _trouver(id);
   if (!v) return false;
@@ -699,19 +705,19 @@ bool EspNowSharedVariable::demander_jeton(uint16_t id)
   return true;
 }
 
-bool EspNowSharedVariable::detiens_jeton(uint16_t id)
+bool espNowTR_SharedVar::detiens_jeton(uint16_t id)
 {
   _Variable* v = _trouver(id);
   return v && v->etat == ESPNOW_VAR_JETON_DETENU;
 }
 
-bool EspNowSharedVariable::jeton_libre(uint16_t id)
+bool espNowTR_SharedVar::jeton_libre(uint16_t id)
 {
   _Variable* v = _trouver(id);
   return v && v->etat == ESPNOW_VAR_JETON_LIBRE && v->jeton_detenteur == 0;
 }
 
-uint16_t EspNowSharedVariable::detenteur_jeton(uint16_t id)
+uint16_t espNowTR_SharedVar::detenteur_jeton(uint16_t id)
 {
   _Variable* v = _trouver(id);
   if (!v) return 0;
@@ -719,7 +725,7 @@ uint16_t EspNowSharedVariable::detenteur_jeton(uint16_t id)
   return v->jeton_detenteur;
 }
 
-bool EspNowSharedVariable::liberer_jeton(uint16_t id)
+bool espNowTR_SharedVar::liberer_jeton(uint16_t id)
 {
   _Variable* v = _trouver(id);
   if (!v || v->etat != ESPNOW_VAR_JETON_DETENU) return false;
@@ -732,7 +738,7 @@ bool EspNowSharedVariable::liberer_jeton(uint16_t id)
 // ============================================================================
 //  Construction des trames
 // ============================================================================
-void EspNowSharedVariable::_envoyer_donnee(_Variable* v)
+void espNowTR_SharedVar::_envoyer_donnee(_Variable* v)
 {
   if (!_initialise) return;
   uint16_t p = ESPNOW_VAR_OFF_ID_EMETTEUR;
@@ -761,8 +767,8 @@ void EspNowSharedVariable::_envoyer_donnee(_Variable* v)
   espnow_var_put_u32(_buf_tx, p, espnow_var_crc32(_buf_tx, p));
 
   esp_now_send(NULL, _buf_tx, (uint8_t)longueur);
-  #ifdef _DEBUG_ESP_NOW_SHARED_VARIABLE_
-  Serial.print(F("[espNow_SharedVariable] envoi DONNEE var "));
+  #ifdef _DEBUG_ESP_NOW_TR_SHARED_VAR_
+  Serial.print(F("[espNowTR_SharedVar] envoi DONNEE var "));
   Serial.print(v->id);
   Serial.print(F(" epoch="));
   Serial.print(v->epoch);
@@ -771,7 +777,7 @@ void EspNowSharedVariable::_envoyer_donnee(_Variable* v)
   #endif
 }
 
-void EspNowSharedVariable::_envoyer_jeton(uint8_t sous_op, uint16_t id_var)
+void espNowTR_SharedVar::_envoyer_jeton(uint8_t sous_op, uint16_t id_var)
 {
   if (!_initialise) return;
   uint16_t p = ESPNOW_VAR_OFF_ID_EMETTEUR;
@@ -790,8 +796,8 @@ void EspNowSharedVariable::_envoyer_jeton(uint8_t sous_op, uint16_t id_var)
   espnow_var_put_u32(_buf_tx, p, espnow_var_crc32(_buf_tx, p));
 
   esp_now_send(NULL, _buf_tx, (uint8_t)longueur);
-  #ifdef _DEBUG_ESP_NOW_SHARED_VARIABLE_
-  Serial.print(F("[espNow_SharedVariable] jeton var "));
+  #ifdef _DEBUG_ESP_NOW_TR_SHARED_VAR_
+  Serial.print(F("[espNowTR_SharedVar] jeton var "));
   Serial.print(id_var);
   Serial.print(F(" sous-op "));
   Serial.println(sous_op);
@@ -802,38 +808,38 @@ void EspNowSharedVariable::_envoyer_jeton(uint8_t sous_op, uint16_t id_var)
 //  Réception (callbacks ESP-NOW)
 // ============================================================================
 #if defined(ESP8266)
-void EspNowSharedVariable::_cb_recv(uint8_t* mac, uint8_t* data, uint8_t len)
+void espNowTR_SharedVar::_cb_recv(uint8_t* mac, uint8_t* data, uint8_t len)
 {
   (void)mac;
   _on_recv(data, len);
 }
-void EspNowSharedVariable::_cb_sent(uint8_t* mac, uint8_t status)
+void espNowTR_SharedVar::_cb_sent(uint8_t* mac, uint8_t status)
 {
   (void)mac;
   _on_sent(status);
 }
 #elif defined(ESP32)
 #if ESP_IDF_VERSION_MAJOR >= 5
-void EspNowSharedVariable::_cb_recv(const esp_now_recv_info_t* info, const uint8_t* data, int len)
+void espNowTR_SharedVar::_cb_recv(const esp_now_recv_info_t* info, const uint8_t* data, int len)
 {
   (void)info;
   _on_recv(data, (uint8_t)len);
 }
 #else
-void EspNowSharedVariable::_cb_recv(const uint8_t* mac, const uint8_t* data, int len)
+void espNowTR_SharedVar::_cb_recv(const uint8_t* mac, const uint8_t* data, int len)
 {
   (void)mac;
   _on_recv(data, (uint8_t)len);
 }
 #endif
-void EspNowSharedVariable::_cb_sent(const uint8_t* mac, esp_now_send_status_t status)
+void espNowTR_SharedVar::_cb_sent(const uint8_t* mac, esp_now_send_status_t status)
 {
   (void)mac;
   _on_sent((uint8_t)(status == ESP_NOW_SEND_SUCCESS ? 0 : 1));
 }
 #endif
 
-void EspNowSharedVariable::_on_recv(const uint8_t* data, uint8_t len)
+void espNowTR_SharedVar::_on_recv(const uint8_t* data, uint8_t len)
 {
   if (!s_instance) return;
   if (len > ESPNOW_VAR_TAILLE_MAX) return;
@@ -844,16 +850,16 @@ void EspNowSharedVariable::_on_recv(const uint8_t* data, uint8_t len)
   s_instance->_rx_head = suivant;                    // publie après la copie complète
 }
 
-void EspNowSharedVariable::_on_sent(uint8_t status)
+void espNowTR_SharedVar::_on_sent(uint8_t status)
 {
   (void)status;
-  #ifdef _DEBUG_ESP_NOW_SHARED_VARIABLE_
-  Serial.print(F("[espNow_SharedVariable] envoi "));
+  #ifdef _DEBUG_ESP_NOW_TR_SHARED_VAR_
+  Serial.print(F("[espNowTR_SharedVar] envoi "));
   Serial.println(status == 0 ? F("OK") : F("ÉCHEC"));
   #endif
 }
 
-void EspNowSharedVariable::_traiter_trame_recue(const uint8_t* t, uint16_t len)
+void espNowTR_SharedVar::_traiter_trame_recue(const uint8_t* t, uint16_t len)
 {
   if (len < ESPNOW_VAR_OFF_PAYLOAD + 4) return;       // minimum : en-tête + CRC
   if (t[ESPNOW_VAR_OFF_MAGIC_HI] != ESPNOW_VAR_MAGIC_HI ||
@@ -867,8 +873,8 @@ void EspNowSharedVariable::_traiter_trame_recue(const uint8_t* t, uint16_t len)
   uint32_t crc_attendu = espnow_var_get_u32(t, p);
   if (espnow_var_crc32(t, longueur - 4) != crc_attendu)
   {
-    #ifdef _DEBUG_ESP_NOW_SHARED_VARIABLE_
-    Serial.println(F("[espNow_SharedVariable] CRC invalide"));
+    #ifdef _DEBUG_ESP_NOW_TR_SHARED_VAR_
+    Serial.println(F("[espNowTR_SharedVar] CRC invalide"));
     #endif
     return;
   }
@@ -882,7 +888,7 @@ void EspNowSharedVariable::_traiter_trame_recue(const uint8_t* t, uint16_t len)
   else if (t[ESPNOW_VAR_OFF_TYPE] == ESPNOW_VAR_TYPE_JETON) _traiter_jeton(v, t, len);
 }
 
-void EspNowSharedVariable::_traiter_donnee(_Variable* v, const uint8_t* t, uint16_t len)
+void espNowTR_SharedVar::_traiter_donnee(_Variable* v, const uint8_t* t, uint16_t len)
 {
   uint16_t p = ESPNOW_VAR_OFF_ID_EMETTEUR;
   uint16_t emetteur = espnow_var_get_u16(t, p);
@@ -917,8 +923,8 @@ void EspNowSharedVariable::_traiter_donnee(_Variable* v, const uint8_t* t, uint1
       // je détiens : je ne cède qu'à un id plus petit (conflit résolu)
       if (emetteur < _cfg.id_iot)
       {
-        #ifdef _DEBUG_ESP_NOW_SHARED_VARIABLE_
-        Serial.print(F("[espNow_SharedVariable] un plus petit id écrit, je cède var "));
+        #ifdef _DEBUG_ESP_NOW_TR_SHARED_VAR_
+        Serial.print(F("[espNowTR_SharedVar] un plus petit id écrit, je cède var "));
         Serial.println(v->id);
         #endif
         v->jeton_detenteur = emetteur;
@@ -934,8 +940,8 @@ void EspNowSharedVariable::_traiter_donnee(_Variable* v, const uint8_t* t, uint1
     }
   }
 
-  #ifdef _DEBUG_ESP_NOW_SHARED_VARIABLE_
-  Serial.print(F("[espNow_SharedVariable] DONNEE var "));
+  #ifdef _DEBUG_ESP_NOW_TR_SHARED_VAR_
+  Serial.print(F("[espNowTR_SharedVar] DONNEE var "));
   Serial.print(v->id);
   Serial.print(F(" emetteur="));
   Serial.print(emetteur);
@@ -944,7 +950,7 @@ void EspNowSharedVariable::_traiter_donnee(_Variable* v, const uint8_t* t, uint1
   #endif
 }
 
-void EspNowSharedVariable::_traiter_jeton(_Variable* v, const uint8_t* t, uint16_t len)
+void espNowTR_SharedVar::_traiter_jeton(_Variable* v, const uint8_t* t, uint16_t len)
 {
   (void)len;
   uint16_t p = ESPNOW_VAR_OFF_ID_EMETTEUR;
@@ -1011,6 +1017,6 @@ void EspNowSharedVariable::_traiter_jeton(_Variable* v, const uint8_t* t, uint16
 }
 
 // instance globale unique — inclusion unique par projet (pas de garde #ifndef)
-EspNowSharedVariable espNow_sharedVariable;
+espNowTR_SharedVar espNowTR_sharedVar;
 
-#endif // esp_now_sharedvariable
+#endif // espNowTR_SharedVar
