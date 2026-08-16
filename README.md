@@ -190,6 +190,15 @@ Le jeton est **par variable** : chaque variable possède son propre jeton et sa 
 
 **Un seul écrivain** : garanti par le jeton dans les conditions nominales (IDs iOT uniques, nœuds coopératifs). En cas de trames perdues, l'arbitrage par plus petit `id_iot` + comparaison d'epoch reconverge.
 
+### Robustesse sous FreeRTOS (ESP32)
+
+Sur ESP32, la librairie tourne dans un environnement **multitâche multi-cœur** (FreeRTOS) : le callback ESP-NOW s'exécute dans la tâche WiFi (core 0), pendant que `loop()` (et vos appels `lire_*()` / `ecrire_*()`) s'exécute sur l'autre cœur. La robustesse est préservée par construction :
+
+- **Le callback ne touche jamais les données** : il se contente de pousser la trame reçue dans un ring buffer `_rx_frames` (production, core 0). L'application de la trame sur `_Variable` (consommation) se fait exclusivement en `loop()`. Toute modification d'une variable est donc **mono-thread** : pas de course sur les valeurs, lecture toujours atomique.
+- **Ring buffer SPSC sans mutex** : un seul producteur (callback) et un seul consommateur (`loop()`) ; `_rx_head` est `volatile` et publié **après** la copie complète de la trame (ordre producteur → consommateur), `_rx_tail` n'est écrit que par `loop()`.
+- **Limite théorique du multi-cœur** : `volatile` n'est pas une barrière mémoire stricte sur Xtensa — dans le pire cas, `loop()` pourrait voir le nouveau `_rx_head` avant que les données du slot soient visibles. Conséquence : la trame partielle est rejetée par le **CRC** → dégradation en *trame perdue*, jamais en corruption de valeur (ni lecture pendante). Le heartbeat et la reprise automatique compensent ces pertes.
+- **Règle d'usage** : `lire_*()` / `ecrire_*()` / `regler_heure_utc()` doivent être appelés depuis `loop()` (ou une seule tâche dédiée). Les appeler depuis une tâche concurrente de `loop()` introduirait une vraie course sur `_Variable` — c'est l'usage documenté, et les exemples fournis le respectent.
+
 **Limites connues** :
 
 - Broadcast non fiable (pas d'ACK) : une collision de `TAKE` peut donner une courte fenêtre à deux écrivains ; l'epoch (le plus récent gagne) et l'arbitrage par plus petit id rétablissent la cohérence.
