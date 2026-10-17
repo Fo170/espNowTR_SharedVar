@@ -6,6 +6,13 @@ Rends une variable logique **virtuellement accessible** entre plusieurs iOT : ch
 
 Auteur : Olivier FOURNET — Licence GPL-3.0-only.
 
+> **Version : 1.0.1**
+> - **v1.0.1** : ajout de **`rearm()`** (ré-initialise ESP-NOW + callbacks + peer broadcast après un
+>   reset WiFi — même problème que `espNow_SharedVar`, à appeler à chaque (re)connexion WiFi) ;
+>   correction du **peer broadcast ESP8266 figé sur le canal 1** → canal 0 (= canal courant du WiFi) ;
+>   **tampon RX porté à 16 trames** (au lieu de 4, un `loop()` bloqué par de l'HTTP ne perdait plus
+>   les trames entrantes) + compteur public **`rx_pertes`**.
+
 ## Fonctionnalités
 
 - **Une variable, plusieurs lecteurs** : `lire_*()` renvoie la copie locale (dernière valeur valide), mise à jour automatiquement par les broadcasts du détenteur.

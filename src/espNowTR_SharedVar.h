@@ -1,8 +1,15 @@
+// Version de la librairie (source UNIQUE — agrégée par liste_lib.h)
+#define __ESPNOWTR_SHAREDVAR_H_VERSION__ "1.0.1"
+
 #ifdef _ESP_NOW_TR_SHARED_VAR_
 
 // ============================================================================
 //  espNowTR_SharedVar.h
-//  Variable partagée ESP-NOW (jeton d'écriture) pour ESP8266 et ESP32 — v1.0.0
+//  Variable partagée ESP-NOW (jeton d'écriture) pour ESP8266 et ESP32 — v1.0.1
+//
+//  v1.0.1 : ajout de rearm() (ré-arme ESP-NOW + callbacks + peer broadcast après
+//  un reset WiFi), peer broadcast ESP8266 sur canal 0 (suivait le WiFi au lieu du
+//  canal 1 figé), tampon RX porté à 16 trames + compteur rx_pertes.
 //
 //  Rends une variable logique virtuellement accessible entre plusieurs iOT :
 //  chaque appareil déclare la variable (ID + type) et en garde une copie
@@ -116,7 +123,7 @@ extern "C" {
 #define ESPNOW_VAR_MAX_UNITE      16          // longueur max d'une unité (string)
 #endif
 #ifndef ESPNOW_VAR_RX_TAMPON
-#define ESPNOW_VAR_RX_TAMPON      4           // nb de trames reçues tamponnées (ring buffer)
+#define ESPNOW_VAR_RX_TAMPON      16          // nb de trames reçues tamponnées (ring buffer) — agrandi (v1.0.1) : un loop() bloqué (HTTP) ne perd plus de trames
 #endif
 
 // états du jeton (point de vue local)
@@ -189,6 +196,7 @@ public:
   };
 
   void init(const Config& cfg);
+  void rearm();                                    // v1.0.1 : ré-armement après reset WiFi (voir init)
   void loop();                                     // à appeler dans loop() du sketch (OBLIGATOIRE)
   void regler_heure_utc(uint32_t epoch);           // heure UTC fournie par l'app (NTP) ; écritures horodatées auto
   uint32_t heure_utc();
@@ -227,6 +235,8 @@ public:
   bool     jeton_libre(uint16_t id);               // personne ne détient le jeton ?
   uint16_t detenteur_jeton(uint16_t id);           // ID du détenteur (0 = libre)
   bool     liberer_jeton(uint16_t id);             // je libère (uniquement si je détiens)
+
+  uint32_t rx_pertes = 0;                          // v1.0.1 : trames reçues perdues (tampon RX plein)
 
 private:
   struct _Variable
@@ -298,9 +308,21 @@ void espNowTR_SharedVar::init(const Config& cfg)
 {
   _cfg = cfg;
   s_instance = this;
+  rearm();
+}
 
+// ============================================================================
+//  Ré-armement après un reset WiFi (v1.0.1)
+//  Un gestionnaire WiFi (ex. WiFiManagerESP._resetWiFi → WiFi.mode(WIFI_OFF) =
+//  esp_wifi_stop/deinit) efface l'état du stack ESP-NOW ET les callbacks
+//  enregistrés par init(). rearm() ré-initialise tout SANS toucher au WiFi.
+//  À appeler à chaque (re)connexion WiFi (même pattern que espNow_SharedVar).
+// ============================================================================
+void espNowTR_SharedVar::rearm()
+{
   if (esp_now_init() != 0)
   {
+    _initialise = false;
     #ifdef _DEBUG_ESP_NOW_TR_SHARED_VAR_
     Serial.println(F("[espNowTR_SharedVar] erreur esp_now_init"));
     #endif
@@ -308,7 +330,9 @@ void espNowTR_SharedVar::init(const Config& cfg)
   }
   #if defined(ESP8266)
   esp_now_set_self_role(ESP_NOW_ROLE_COMBO);
-  esp_now_add_peer(_espnow_var_broadcast, ESP_NOW_ROLE_COMBO, 1, NULL, 0);
+  // ⚠️ v1.0.1 : canal 0 (= canal courant du WiFi) au lieu de 1 — un peer broadcast
+  // figé sur un canal ≠ canal courant empêchait la diffusion / la réception.
+  esp_now_add_peer(_espnow_var_broadcast, ESP_NOW_ROLE_COMBO, 0, NULL, 0);
   #elif defined(ESP32)
   esp_now_peer_info_t peerInfo;
   memset(&peerInfo, 0, sizeof(peerInfo));
@@ -327,7 +351,7 @@ void espNowTR_SharedVar::init(const Config& cfg)
   esp_now_register_recv_cb(_cb_recv);
   _initialise = true;
   #ifdef _DEBUG_ESP_NOW_TR_SHARED_VAR_
-  Serial.println(F("[espNowTR_SharedVar] init OK"));
+  Serial.println(F("[espNowTR_SharedVar] rearm OK"));
   #endif
 }
 
@@ -844,7 +868,11 @@ void espNowTR_SharedVar::_on_recv(const uint8_t* data, uint8_t len)
   if (!s_instance) return;
   if (len > ESPNOW_VAR_TAILLE_MAX) return;
   uint8_t suivant = (uint8_t)(s_instance->_rx_head + 1) % ESPNOW_VAR_RX_TAMPON;
-  if (suivant == s_instance->_rx_tail) return;       // tampon plein → trame perdue
+  if (suivant == s_instance->_rx_tail)
+  {
+    s_instance->rx_pertes++;             // v1.0.1 : tampon plein → trame perdue (compteur)
+    return;
+  }
   memcpy(s_instance->_rx_frames[s_instance->_rx_head], data, len);
   s_instance->_rx_lens[s_instance->_rx_head] = len;
   s_instance->_rx_head = suivant;                    // publie après la copie complète
