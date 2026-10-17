@@ -1,6 +1,6 @@
 {
   "name": "espNowTR_SharedVar",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Variable partagée ESP-NOW pour ESP8266 et ESP32 : une variable logique virtuellement accessible entre plusieurs iOT, avec horodatage UTC, ID de dernier écrivain, CRC32 et jeton d'écriture dynamique par variable (un seul détenteur à la fois).",
   "keywords": [
     "esp-now",

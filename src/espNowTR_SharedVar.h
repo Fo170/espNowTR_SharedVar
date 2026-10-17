@@ -1,5 +1,5 @@
 // Version de la librairie (source UNIQUE — agrégée par liste_lib.h)
-#define __ESPNOWTR_SHAREDVAR_H_VERSION__ "1.0.1"
+#define __ESPNOWTR_SHAREDVAR_H_VERSION__ "1.0.2"
 
 #ifdef _ESP_NOW_TR_SHARED_VAR_
 
